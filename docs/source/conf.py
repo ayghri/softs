@@ -13,7 +13,7 @@ author = "Ayoub G."
 
 # Get version from package metadata
 try:
-    release = get_version("softlabels")
+    release = get_version("softs")
 except Exception:
     release = "0.1.0"
 
@@ -43,7 +43,7 @@ master_doc = "index"
 html_theme = "furo"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
-html_title = "softlabels"
+html_title = "softs"
 html_logo = "_static/softlabel_logo.png"
 html_favicon = "_static/softlabel_logo.png"
 
@@ -90,7 +90,7 @@ latex_elements = {
 }
 
 latex_documents = [
-    (master_doc, "softlabels.tex", "softlabels Documentation", author, "manual"),
+    (master_doc, "softs.tex", "softs Documentation", author, "manual"),
 ]
 
 # -- Options for EPUB output -------------------------------------------------

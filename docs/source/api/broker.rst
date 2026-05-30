@@ -1,10 +1,10 @@
 Broker
 ======
 
-.. autoclass:: softlabels.Broker
+.. autoclass:: softs.Broker
    :members:
    :undoc-members:
 
-.. autoclass:: softlabels.BrokerStats
+.. autoclass:: softs.BrokerStats
    :members:
    :undoc-members:

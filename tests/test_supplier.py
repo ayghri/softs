@@ -4,7 +4,7 @@ import pytest
 import ray
 import torch
 
-from softlabels import Supplier, SupplierPool
+from softs import Supplier, SupplierPool
 
 
 @pytest.fixture(scope="module", autouse=True)

@@ -1,4 +1,4 @@
-"""Pytest configuration and fixtures for softlabels tests."""
+"""Pytest configuration and fixtures for softs tests."""
 
 import pytest
 

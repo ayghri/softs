@@ -6,7 +6,7 @@ Installation
 
 .. code-block:: bash
 
-    pip install softlabels
+    pip install softs
 
 Dependencies: Python 3.11+, PyTorch 2.0+, PyZMQ, msgpack, PyYAML.
 
@@ -51,7 +51,7 @@ Running
 
 .. code-block:: python
 
-    from softlabels import Broker, EndpointConfig
+    from softs import Broker, EndpointConfig
     Broker(endpoints=EndpointConfig()).run()
 
 **Worker:**
@@ -59,7 +59,7 @@ Running
 .. code-block:: python
 
     import torch
-    from softlabels import Worker, BatchConfig, TensorSpec, EndpointConfig
+    from softs import Worker, BatchConfig, TensorSpec, EndpointConfig
 
     config = BatchConfig([TensorSpec("x", (4,), "float32")])
 
@@ -74,7 +74,7 @@ Running
 
 .. code-block:: python
 
-    from softlabels import Client, BatchConfig, TensorSpec, EndpointConfig
+    from softs import Client, BatchConfig, TensorSpec, EndpointConfig
 
     config = BatchConfig([TensorSpec("x", (4,), "float32")])
 
@@ -139,7 +139,7 @@ Using a Different Medium
 
 .. code-block:: python
 
-    from softlabels import Worker, Client, FilesystemMedium
+    from softs import Worker, Client, FilesystemMedium
 
     Worker(..., medium_cls=FilesystemMedium).run()
     Client(..., medium_cls=FilesystemMedium)

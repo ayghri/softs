@@ -5,7 +5,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 
-from softlabels import (
+from softs import (
     ShmMedium,
     Broker, Supplier, Client, SoftIterableDataset,
     Batch, make_collate_fn, BatchConfig, TensorSpec, EndpointConfig,

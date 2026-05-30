@@ -1,6 +1,6 @@
 Worker
 ======
 
-.. autoclass:: softlabels.Worker
+.. autoclass:: softs.Worker
    :members:
    :undoc-members:

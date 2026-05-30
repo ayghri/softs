@@ -4,7 +4,7 @@ import time
 import pytest
 import torch
 
-from softlabels import Broker, Supplier, Client, ShmMedium, BatchConfig, TensorSpec, EndpointConfig
+from softs import Broker, Supplier, Client, ShmMedium, BatchConfig, TensorSpec, EndpointConfig
 
 ENDPOINTS = EndpointConfig(
     frontend="ipc:///tmp/sl_test_fe.sock",

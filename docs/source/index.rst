@@ -3,7 +3,7 @@ Soft Labels Package
 
 **Async Soft Labels Generation with PyTorch**
 
-``softlabels`` is a single-machine data pipeline for on-the-fly generation of
+``softs`` is a single-machine data pipeline for on-the-fly generation of
 training data.  A central **broker** routes requests from **clients** to
 **workers** based on ``model_id``.  Workers generate data and write it to a
 pluggable transfer medium.  Clients read the results with zero-copy access.
@@ -26,7 +26,7 @@ Quick Example
 
 .. code-block:: python
 
-    from softlabels import Broker, EndpointConfig
+    from softs import Broker, EndpointConfig
     Broker(endpoints=EndpointConfig()).run()
 
 **2. Start a worker:**
@@ -34,7 +34,7 @@ Quick Example
 .. code-block:: python
 
     import torch
-    from softlabels import Worker, BatchConfig, TensorSpec, EndpointConfig
+    from softs import Worker, BatchConfig, TensorSpec, EndpointConfig
 
     config = BatchConfig([
         TensorSpec("x", (32, 3, 224, 224), "float32"),
@@ -58,7 +58,7 @@ Quick Example
 
 .. code-block:: python
 
-    from softlabels import Client, BatchConfig, TensorSpec, EndpointConfig
+    from softs import Client, BatchConfig, TensorSpec, EndpointConfig
 
     config = BatchConfig([
         TensorSpec("x", (32, 3, 224, 224), "float32"),
@@ -83,7 +83,7 @@ Installation
 
 .. code-block:: bash
 
-    pip install softlabels
+    pip install softs
 
 .. toctree::
    :hidden:

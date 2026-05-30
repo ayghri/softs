@@ -8,8 +8,8 @@ import yaml
 
 @dataclass
 class EndpointConfig:
-    frontend: str = "ipc:///tmp/softlabels_frontend.sock"
-    backend: str = "ipc:///tmp/softlabels_backend.sock"
+    frontend: str = "ipc:///tmp/softs_frontend.sock"
+    backend: str = "ipc:///tmp/softs_backend.sock"
 
     @classmethod
     def from_yaml(cls, path: str) -> "EndpointConfig":

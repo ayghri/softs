@@ -1,16 +1,16 @@
 Configuration
 =============
 
-.. autoclass:: softlabels.BatchConfig
+.. autoclass:: softs.BatchConfig
    :members:
    :undoc-members:
 
-.. autoclass:: softlabels.TensorSpec
+.. autoclass:: softs.TensorSpec
    :members:
    :undoc-members:
 
-.. autoclass:: softlabels.EndpointConfig
+.. autoclass:: softs.EndpointConfig
    :members:
    :undoc-members:
 
-.. autofunction:: softlabels.make_xy_config
+.. autofunction:: softs.make_xy_config

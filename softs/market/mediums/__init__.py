@@ -1,4 +1,4 @@
-"""Transfer mediums for softlabels."""
+"""Transfer mediums for softs."""
 
 from .base import Medium
 from .shm import ShmMedium

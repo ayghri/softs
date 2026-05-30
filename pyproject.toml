@@ -15,16 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-docs = [
-    "sphinx>=7.0,<9.0",
-    "furo",
-    "sphinx-autodoc-typehints<3.0",
-]
 dev = [
     "pytest>=9.0.2,<10.0.0",
-    "sphinx>=7.0,<9.0",
-    "furo",
-    "sphinx-autodoc-typehints<3.0",
 ]
 examples = [
     "hydra-core>=1.3",
@@ -44,9 +36,6 @@ packages = [{include = "softs", from = "./"}]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.2"
-furo = "^2025.9.25"
-sphinx = ">=7.0,<9.0"
-sphinx-autodoc-typehints = "<3.0"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

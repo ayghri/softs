@@ -1,10 +1,10 @@
-# softlabels
+# softs
 
 A broker-based data pipeline for distributed teacher-student training in PyTorch.
 
 ## Overview
 
-`softlabels` provides a **data-agnostic** message routing system for teacher-student workflows:
+`softs` provides a **data-agnostic** message routing system for teacher-student workflows:
 
 - **Broker**: Routes messages between students and workers. Knows nothing about the data.
 - **Workers**: Generate samples on-demand, write raw bytes to student-owned memory.
@@ -64,9 +64,9 @@ This:
 ## Installation
 
 ```bash
-pip install softlabels
+pip install softs
 # or
-poetry add softlabels
+poetry add softs
 ```
 
 **Dependencies**: `pyzmq`, `torch`, `numpy`
@@ -76,7 +76,7 @@ poetry add softlabels
 ### 1. Define your data format with BatchConfig
 
 ```python
-from softlabels import BatchConfig, TensorSpec
+from softs import BatchConfig, TensorSpec
 
 config = BatchConfig([
     TensorSpec("x", (3, 224, 224), "float32"),
@@ -87,7 +87,7 @@ config = BatchConfig([
 ### 2. Start the broker
 
 ```python
-from softlabels import Broker, setup_logging
+from softs import Broker, setup_logging
 
 setup_logging("INFO")
 Broker().run()
@@ -97,7 +97,7 @@ Broker().run()
 
 ```python
 import torch
-from softlabels import Worker, setup_logging
+from softs import Worker, setup_logging
 
 setup_logging("INFO")
 
@@ -116,7 +116,7 @@ Worker(
 ### 4. Run student training
 
 ```python
-from softlabels import StudentClient, DistillIterableDataset, setup_logging
+from softs import StudentClient, DistillIterableDataset, setup_logging
 
 setup_logging("INFO")
 
@@ -147,7 +147,7 @@ client.close()
 `BatchConfig` describes tensors and handles encoding/decoding:
 
 ```python
-from softlabels import BatchConfig, TensorSpec
+from softs import BatchConfig, TensorSpec
 
 # Define specs
 config = BatchConfig([
@@ -193,7 +193,7 @@ config = BatchConfig.from_dict({
 ```yaml
 # config.yaml
 batch_config:
-  _target_: softlabels.BatchConfig
+  _target_: softs.BatchConfig
   specs:
     - name: x
       shape: [512, 768]
@@ -207,7 +207,7 @@ config = instantiate(cfg.batch_config)
 
 ## Transfer Mediums
 
-By default, softlabels uses **POSIX shared memory** for zero-copy data transfer. The architecture supports other mediums through the `Medium` protocol.
+By default, softs uses **POSIX shared memory** for zero-copy data transfer. The architecture supports other mediums through the `Medium` protocol.
 
 ### How Mediums Work
 
@@ -221,7 +221,7 @@ The broker never touches the actual data - it only routes metadata.
 ### Default: SharedMemoryManager
 
 ```python
-from softlabels.mediums import SharedMemoryManager
+from softs.mediums import SharedMemoryManager
 
 # Students create shm (read_only=True = create owner)
 shm = SharedMemoryManager(slot_count=16, slot_stride=1024, read_only=True)
@@ -235,7 +235,7 @@ shm = SharedMemoryManager(slot_count=16, slot_stride=1024, read_only=False, run_
 Implement the `Medium` protocol or extend `MediumBase`:
 
 ```python
-from softlabels.mediums import MediumBase
+from softs.mediums import MediumBase
 
 class FileMedium(MediumBase):
     """File-based medium (example for network filesystems)."""
@@ -281,7 +281,7 @@ Potential medium implementations:
 
 ```bash
 # Terminal 1: Broker
-python -c "from softlabels import Broker; Broker().run()"
+python -c "from softs import Broker; Broker().run()"
 
 # Terminal 2: Worker(s) - can run multiple
 python worker.py
@@ -328,16 +328,16 @@ torchrun --nproc_per_node=2 distill_llm.py mode=student
 setup_logging(level: int | str = "INFO") -> None
 ```
 
-Configure logging for all softlabels modules.
+Configure logging for all softs modules.
 
 ### Broker
 
 ```python
 Broker(
-    frontend_endpoint: str = "ipc:///tmp/softlabels_frontend.sock",
-    backend_endpoint: str = "ipc:///tmp/softlabels_backend.sock",
-    control_endpoint: str = "ipc:///tmp/softlabels_control.sock",
-    control_pub_endpoint: str = "ipc:///tmp/softlabels_control_pub.sock",
+    frontend_endpoint: str = "ipc:///tmp/softs_frontend.sock",
+    backend_endpoint: str = "ipc:///tmp/softs_backend.sock",
+    control_endpoint: str = "ipc:///tmp/softs_control.sock",
+    control_pub_endpoint: str = "ipc:///tmp/softs_control_pub.sock",
 )
 
 broker.run()  # Blocking

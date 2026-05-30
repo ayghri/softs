@@ -1,6 +1,6 @@
 Client
 ======
 
-.. autoclass:: softlabels.Client
+.. autoclass:: softs.Client
    :members:
    :undoc-members:

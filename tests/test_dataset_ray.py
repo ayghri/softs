@@ -5,7 +5,7 @@ import ray
 import torch
 from torch.utils.data import DataLoader
 
-from softlabels import Supplier, SupplierPool, SoftIterableDataset, SoftDataLoader
+from softs import Supplier, SupplierPool, SoftIterableDataset, SoftDataLoader
 
 
 @pytest.fixture(scope="module", autouse=True)

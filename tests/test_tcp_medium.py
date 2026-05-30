@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from softlabels import TCPMedium
+from softs import TCPMedium
 
 SLOT_COUNT = 4
 SLOT_STRIDE = 256

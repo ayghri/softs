@@ -4,7 +4,7 @@ Architecture
 Overview
 --------
 
-softlabels uses a **marketplace** architecture. Clients submit orders
+softs uses a **marketplace** architecture. Clients submit orders
 (requests with a ``model_id``), workers serve orders for models they've
 registered. The broker matches orders to workers. Data flows through a
 pluggable transfer medium — the broker never touches it.

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from softlabels import (
+from softs import (
     Broker, Supplier, Client,
     BatchConfig, TensorSpec, FilesystemMedium, EndpointConfig,
 )

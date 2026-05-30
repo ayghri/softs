@@ -1,6 +1,6 @@
-"""Tests for softlabels.market.protocol module."""
+"""Tests for softs.market.protocol module."""
 
-from softlabels.market.protocol import (
+from softs.market.protocol import (
     ClientCmd, SupplierCmd, decode_payload, encode_payload,
     make_reply, make_request, parse_request,
 )

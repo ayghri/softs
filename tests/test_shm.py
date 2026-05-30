@@ -1,9 +1,9 @@
-"""Tests for softlabels shared memory module."""
+"""Tests for softs shared memory module."""
 import pytest
 import torch
 
-from softlabels.market.mediums.shm import ShmMedium
-from softlabels import BatchConfig, TensorSpec
+from softs.market.mediums.shm import ShmMedium
+from softs import BatchConfig, TensorSpec
 
 
 class TestShmMedium:

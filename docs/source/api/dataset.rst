@@ -1,12 +1,12 @@
 Dataset & DataLoader
 ====================
 
-.. autoclass:: softlabels.DistillIterableDataset
+.. autoclass:: softs.DistillIterableDataset
    :members:
    :undoc-members:
 
-.. autoclass:: softlabels.Batch
+.. autoclass:: softs.Batch
    :members:
    :undoc-members:
 
-.. autofunction:: softlabels.make_collate_fn
+.. autofunction:: softs.make_collate_fn

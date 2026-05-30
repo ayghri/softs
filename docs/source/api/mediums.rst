@@ -1,14 +1,14 @@
 Transfer Mediums
 ================
 
-.. autoclass:: softlabels.ShmMedium
+.. autoclass:: softs.ShmMedium
    :members:
    :undoc-members:
 
-.. autoclass:: softlabels.FilesystemMedium
+.. autoclass:: softs.FilesystemMedium
    :members:
    :undoc-members:
 
-.. autoclass:: softlabels.TCPMedium
+.. autoclass:: softs.TCPMedium
    :members:
    :undoc-members:
