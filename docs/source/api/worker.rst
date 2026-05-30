@@ -1,6 +1,6 @@
-Worker
-======
+Supplier
+========
 
-.. autoclass:: softs.Worker
+.. autoclass:: softs.Supplier
    :members:
    :undoc-members:

@@ -17,7 +17,7 @@ Key Features
 - **Fault tolerant**: broker detects dead workers/clients, re-queues failed work, workers send ``GOODBYE`` on exit
 - **Timeouts**: client and worker ``send_timeout_ms`` prevents hanging when broker is down
 - **Pluggable mediums**: shared memory, filesystem (mmap), TCP — or extend ``Medium``
-- **PyTorch integration**: ``DistillIterableDataset`` for seamless ``DataLoader`` use
+- **PyTorch integration**: ``SoftIterableDataset`` for seamless ``DataLoader`` use
 
 Quick Example
 -------------

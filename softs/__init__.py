@@ -15,6 +15,11 @@ def setup_logging(level: int | str = logging.INFO) -> None:
     )
 
 
+# User-facing
 from .configs import BatchConfig, TensorSpec, make_xy_config
-from .supplier import Supplier, SupplierPool
-from .dataset import SoftIterableDataset, SoftDataLoader
+from .market import EndpointConfig
+from .dataset import SoftIterableDataset, SoftDataLoader, Batch, make_collate_fn
+
+# Market internals (for advanced use)
+from .market import Broker, Supplier, Client, BrokerStats
+from .market import ShmMedium, FilesystemMedium, TCPMedium

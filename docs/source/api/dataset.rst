@@ -1,7 +1,11 @@
 Dataset & DataLoader
 ====================
 
-.. autoclass:: softs.DistillIterableDataset
+.. autoclass:: softs.SoftIterableDataset
+   :members:
+   :undoc-members:
+
+.. autoclass:: softs.SoftDataLoader
    :members:
    :undoc-members:
 
