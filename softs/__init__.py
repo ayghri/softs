@@ -2,7 +2,7 @@
 
 import logging
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 
 def setup_logging(level: int | str = logging.INFO) -> None:
@@ -15,11 +15,6 @@ def setup_logging(level: int | str = logging.INFO) -> None:
     )
 
 
-# User-facing
 from .configs import BatchConfig, TensorSpec, make_xy_config
-from .market import EndpointConfig
-from .dataset import SoftIterableDataset, SoftDataLoader, Batch, make_collate_fn
-
-# Market internals (for advanced use)
-from .market import Broker, Supplier, Client, BrokerStats
-from .market import ShmMedium, FilesystemMedium, TCPMedium
+from .supplier import Supplier, SupplierPool
+from .dataset import SoftIterableDataset, SoftDataLoader

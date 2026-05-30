@@ -1,16 +1,15 @@
 [project]
-name = "softlabels"
+name = "softs"
 version = "0.1.0"
 description = "Async on-the-fly training data generation pipeline for PyTorch"
 authors = [
-    {name = "Ayoub G.",email = "git@ayghri.me"}
+    {name = "Ayoub G.",email = "develop@ayghri.me"}
 ]
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "pyzmq (>=27.1.0,<28.0.0)",
+    "ray[default] (>=2.40.0)",
     "torch (>=2.9.1,<3.0.0)",
-    "msgpack (>=1.0.0,<2.0.0)",
     "numpy (>=1.26.0,<3.0.0)",
     "pyyaml (>=6.0,<7.0)"
 ]
@@ -36,11 +35,11 @@ examples = [
 ]
 
 [project.urls]
-Documentation = "https://softlabels.readthedocs.io"
-Repository = "https://github.com/yourusername/softlabels"
+Documentation = "https://softs.readthedocs.io"
+Repository = "https://github.com/ayghri/softs"
 
 [tool.poetry]
-packages = [{include = "softlabels", from = "./"}]
+packages = [{include = "softs", from = "./"}]
 
 
 [tool.poetry.group.dev.dependencies]
