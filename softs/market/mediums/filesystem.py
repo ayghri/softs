@@ -1,24 +1,18 @@
 """File-backed transfer medium using memory-mapped files."""
 
+import logging
 import mmap
 import os
 from pathlib import Path
 
 from .base import Medium
 
+logger = logging.getLogger(__name__)
+
 
 class FilesystemMedium(Medium):
     """buf_name is the file path."""
 
-    #
-    # def __init__(
-    #     self,
-    #     slot_count: int,
-    #     slot_stride: int,
-    #     path: str | Path,
-    #     create: bool = True,
-    # ):
-    #
     def __init__(
         self,
         address,
@@ -27,12 +21,13 @@ class FilesystemMedium(Medium):
         create=False,
         **kwargs,
     ):
-        # self._slot_count = slot_count
-        # self._slot_stride = slot_stride
         super().__init__(address, slot_size, num_slots, create)
-        self.path = Path(address)
-        # self.owner = create
-        # total = slot_count * slot_stride
+
+        if isinstance(address, str):
+            self.path = Path(address)
+        else:
+            raise ValueError(f"address must be str or Path, got {address}")
+
         total = slot_size * num_slots
 
         if create:
@@ -49,6 +44,13 @@ class FilesystemMedium(Medium):
             self._mmap[slot_index : slot_index + len(data)] = data  # type: ignore
             return True
         except Exception:
+            logger.warning(
+                "filesystem write failed at offset %d (len %d) on '%s'",
+                slot_index,
+                len(data),
+                self.address,
+                exc_info=True,
+            )
             return False
 
     def read(self, slot_index: int) -> bytes:

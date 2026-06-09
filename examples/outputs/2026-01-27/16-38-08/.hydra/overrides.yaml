@@ -1,0 +1,2 @@
+- mode=student
+- device.student_gpu=0

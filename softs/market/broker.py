@@ -1,6 +1,14 @@
-"""Marketplace broker: routes orders from clients to suppliers by product_id."""
+"""Marketplace broker: routes orders to suppliers by matching product_id patterns.
+
+An order carries a concrete ``product_id`` string; a supplier registers one or
+more **regex patterns** (its ``product_ids``) describing what it can serve. The
+broker dispatches an order to a ready supplier whose pattern ``fullmatch``-es the
+order's ``product_id`` - so a supplier declares a pattern instead of enumerating
+every allowed id. A metachar-free pattern behaves as an exact match.
+"""
 
 import logging
+import re
 import threading
 import time
 from collections import defaultdict, deque
@@ -34,12 +42,14 @@ class Broker:
         endpoints: EndpointConfig,
         supplier_timeout: float = 60.0,
         client_timeout: float = 120.0,
-        max_queue_per_product: int = 5000,
+        max_queue_per_product: int = 16,
+        max_order_attempts: int = 5,
     ):
         self.endpoints = endpoints
         self.supplier_timeout = supplier_timeout
         self.client_timeout = client_timeout
         self.max_queue_per_product = max_queue_per_product
+        self.max_order_attempts = max_order_attempts
 
         self._lock = threading.RLock()
         self._shutdown = threading.Event()
@@ -52,24 +62,29 @@ class Broker:
         # Single source of truth
         self._orders: dict[str, Order] = {}
 
-        # Indices
-        self._client_orders: dict[bytes, set[str]] = defaultdict(set)
-        self._queued: dict[str, deque[str]] = defaultdict(deque)  # product_id → order_ids
-        self._available: dict[str, deque[bytes]] = defaultdict(deque)  # product_id → supplier_ids
-        self._busy: dict[bytes, str] = {}  # supplier_id → order_id
+        # mappings, s:supplier, c:client, p:product, o:order
+        self._cid_to_oid: dict[bytes, set[str]] = defaultdict(set)
+        # product_id -> order_ids
+        self._pid_to_oid: dict[str, deque[str]] = defaultdict(deque)
+        # ready suppliers (FIFO); each can serve any product_id its patterns match
+        self._ready: deque[bytes] = deque()
+        # supplier_id -> compiled regex patterns it serves
+        self._patterns: dict[bytes, list[re.Pattern]] = {}
+        # supplier_id -> order_id
+        self._sid_to_oid: dict[bytes, str] = {}
 
         self._total_completed = 0
-
-    def _setup_zmq(self) -> None:
-        self._ctx = zmq.Context()
-        self._frontend = self._bind_router(self.endpoints.frontend)
-        self._backend = self._bind_router(self.endpoints.backend)
 
     def _bind_router(self, endpoint: str) -> zmq.Socket:
         sock = self._ctx.socket(zmq.ROUTER)
         sock.setsockopt(zmq.LINGER, 0)
         sock.bind(endpoint)
         return sock
+
+    def _setup_zmq(self) -> None:
+        self._ctx = zmq.Context()
+        self._frontend = self._bind_router(self.endpoints.frontend)
+        self._backend = self._bind_router(self.endpoints.backend)
 
     def _teardown_zmq(self) -> None:
         for sock in (self._frontend, self._backend):
@@ -83,28 +98,33 @@ class Broker:
         except zmq.ZMQError:
             pass
 
-    def _touch(self, registry: dict, identity: bytes) -> None:
+    def _touch(self, registry: dict, identity: bytes) -> bool:
         with self._lock:
             info = registry.get(identity)
             if info:
                 info.last_seen = time.time()
+                return True
+        return False
+
+    def _add_party(self, registry, identity, info: dict):
+        registry[identity] = ClientInfo(peer_id=identity, **info)
+
+        # )
 
     # -- Client handlers --
 
     def _handle_client_hello(self, identity: bytes, payload: dict) -> bytes:
         with self._lock:
-            existing = self._clients.get(identity)
-            if existing:
-                existing.last_seen = time.time()
-                return make_reply(True, peer_id=existing.peer_id)
+            if self._touch(self._clients, identity):
+                return make_reply(True, peer_id=self._clients[identity].peer_id)
             self._next_client_id += 1
-            peer_id = self._next_client_id
-            self._clients[identity] = ClientInfo(
-                peer_id=peer_id, last_seen=time.time()
+            self._add_party(
+                self._clients, self._next_client_id, {"last_seen": time.time()}
             )
+
             total = len(self._clients)
-        logger.info(f"Client {peer_id} connected (total={total})")
-        return make_reply(True, peer_id=peer_id)
+        logger.info(f"Client {self._next_client_id} connected (total={total})")
+        return make_reply(True, peer_id=self._next_client_id)
 
     def _handle_client_order(self, identity: bytes, payload: dict) -> bytes:
         try:
@@ -114,7 +134,7 @@ class Broker:
         with self._lock:
             self._touch(self._clients, identity)
             if (
-                len(self._queued.get(req.product_id, []))
+                len(self._pid_to_oid.get(req.product_id, []))
                 >= self.max_queue_per_product
             ):
                 return make_reply(False, error="Queue full for product_id")
@@ -126,18 +146,26 @@ class Broker:
                 offset=req.offset,
             )
             self._orders[req.order_id] = order
-            self._client_orders[identity].add(req.order_id)
-            self._queued[req.product_id].append(req.order_id)
+            self._cid_to_oid[identity].add(req.order_id)
+            self._pid_to_oid[req.product_id].append(req.order_id)
         self._try_dispatch()
         return make_reply(True)
 
     def _handle_client_discard(self, identity: bytes, payload: dict) -> bytes:
+        # Only cancel orders that are still QUEUED (no supplier has touched their
+        # slot). DISPATCHED orders are left running so they FULFILL normally -
+        # the client quarantines those slots until then, preventing a supplier
+        # write from landing in a reused slot. See Client.discard().
         with self._lock:
-            order_ids = list(self._client_orders.get(identity, set()))
-            for oid in order_ids:
-                self._remove_order(oid)
-            self._client_orders[identity] = set()
-        return make_reply(True, cancelled=len(order_ids))
+            cancelled: list[str] = []
+            for order_id in list(self._cid_to_oid.get(identity, set())):
+                order = self._orders.get(order_id)
+                if order is not None and order.status == OrderState.QUEUED:
+                    self._remove_order(order_id)
+                    cancelled.append(order_id)
+        return make_reply(
+            True, cancelled=len(cancelled), cancelled_ids=cancelled
+        )
 
     def _handle_client_cancel(self, identity: bytes, payload: dict) -> bytes:
         try:
@@ -148,6 +176,10 @@ class Broker:
             order = self._orders.get(msg.order_id)
             if not order or order.client_id != identity:
                 return make_reply(False, error="Order not owned by this client")
+            # Only QUEUED orders can be safely cancelled; a DISPATCHED order is
+            # already being written by a supplier, so let it FULFILL normally.
+            if order.status != OrderState.QUEUED:
+                return make_reply(False, error="Order already dispatched")
             self._remove_order(msg.order_id)
         return make_reply(True)
 
@@ -157,13 +189,18 @@ class Broker:
         product_ids = payload.get("product_ids", [])
         if not product_ids:
             return make_reply(
-                False, error="Suppliers must register at least one product_id"
+                False, error="Suppliers must register at least one product_id pattern"
             )
+        try:
+            patterns = [re.compile(p) for p in product_ids]
+        except re.error as e:
+            return make_reply(False, error=f"Invalid product_id pattern: {e}")
         with self._lock:
             existing = self._suppliers.get(identity)
             if existing:
                 existing.product_ids = product_ids
                 existing.last_seen = time.time()
+                self._patterns[identity] = patterns
                 return make_reply(True, peer_id=existing.peer_id)
             self._next_supplier_id += 1
             peer_id = self._next_supplier_id
@@ -172,21 +209,18 @@ class Broker:
                 product_ids=product_ids,
                 last_seen=time.time(),
             )
+            self._patterns[identity] = patterns
             total = len(self._suppliers)
         logger.info(
-            f"Supplier {peer_id} connected (products={product_ids}, total={total})"
+            f"Supplier {peer_id} connected (patterns={product_ids}, total={total})"
         )
         return make_reply(True, peer_id=peer_id)
 
     def _handle_supplier_ready(self, identity: bytes, payload: dict) -> None:
         with self._lock:
-            self._touch(self._suppliers, identity)
-            info = self._suppliers.get(identity)
-            if info:
-                for pid in info.product_ids:
-                    q = self._available[pid]
-                    if identity not in q:
-                        q.append(identity)
+            if self._touch(self._suppliers, identity):
+                if identity not in self._ready:
+                    self._ready.append(identity)
         self._try_dispatch()
 
     def _handle_supplier_done(self, identity: bytes, payload: dict) -> bytes:
@@ -196,27 +230,59 @@ class Broker:
             return make_reply(False, error=str(e))
         order_id = msg.order_id
         success = msg.success
+        gave_up = False
         with self._lock:
             self._touch(self._suppliers, identity)
-            self._busy.pop(identity, None)
+            self._sid_to_oid.pop(identity, None)
             order = self._orders.pop(order_id, None)
             if not order:
                 return make_reply(False, error="Unknown order")
-            self._client_orders.get(order.client_id, set()).discard(order_id)
+            self._cid_to_oid.get(order.client_id, set()).discard(order_id)
             if success:
                 self._total_completed += 1
             else:
-                order.state = OrderState.QUEUED
-                order.supplier_id = b""
-                order.dispatched_at = 0.0
-                self._orders[order_id] = order
-                self._client_orders[order.client_id].add(order_id)
-                self._queued[order.product_id].append(order_id)
+                order.attempts += 1
+                if order.attempts >= self.max_order_attempts:
+                    # Permanent failure: drop the order (already removed from all
+                    # indices above) and tell the client to free its slot, so a
+                    # broken supplier/medium can't loop forever or leak slots.
+                    gave_up = True
+                    logger.error(
+                        "Order %s (product=%s) failed %d times; giving up. "
+                        "Supplier writes are failing - check the medium/offset.",
+                        order_id,
+                        order.product_id,
+                        order.attempts,
+                    )
+                else:
+                    if order.attempts == 1:
+                        logger.warning(
+                            "Order %s (product=%s) failed; requeueing "
+                            "(attempt %d/%d)",
+                            order_id,
+                            order.product_id,
+                            order.attempts,
+                            self.max_order_attempts,
+                        )
+                    order.status = OrderState.QUEUED
+                    order.supplier_id = b""
+                    order.dispatched_at = 0.0
+                    self._orders[order_id] = order
+                    self._cid_to_oid[order.client_id].add(order_id)
+                    self._pid_to_oid[order.product_id].append(order_id)
         if success:
             self._frontend.send_multipart(
                 [
                     order.client_id,
                     ClientCmd.FULFILLED,
+                    encode_payload({"order_id": order_id}),
+                ]
+            )
+        elif gave_up:
+            self._frontend.send_multipart(
+                [
+                    order.client_id,
+                    ClientCmd.FAILED,
                     encode_payload({"order_id": order_id}),
                 ]
             )
@@ -235,22 +301,36 @@ class Broker:
 
     # -- Dispatch --
 
+    def _supplier_matches(self, supplier_id: bytes, product_id: str) -> bool:
+        return any(
+            p.fullmatch(product_id) for p in self._patterns.get(supplier_id, ())
+        )
+
+    def _take_ready(self, product_id: str) -> bytes | None:
+        """Pop the first ready supplier whose pattern matches product_id."""
+        for idx, sid in enumerate(self._ready):
+            if self._supplier_matches(sid, product_id):
+                del self._ready[idx]
+                return sid
+        return None
+
     def _try_dispatch(self) -> None:
         with self._lock:
-            for product_id, queue in self._queued.items():
-                avail = self._available.get(product_id)
-                if not avail:
-                    continue
-                while queue and avail:
+            for product_id, queue in self._pid_to_oid.items():
+                while queue and self._ready:
                     order_id = queue.popleft()
                     order = self._orders.get(order_id)
                     if not order:
-                        continue  # cancelled while queued
-                    supplier = avail.popleft()
-                    order.state = OrderState.DISPATCHED
+                        continue  # cancelled while queued; don't consume a supplier
+                    supplier = self._take_ready(product_id)
+                    if supplier is None:
+                        # No ready supplier serves this product_id; put it back.
+                        queue.appendleft(order_id)
+                        break
+                    order.status = OrderState.DISPATCHED
                     order.supplier_id = supplier
                     order.dispatched_at = time.time()
-                    self._busy[supplier] = order_id
+                    self._sid_to_oid[supplier] = order_id
                     self._backend.send_multipart(
                         [
                             supplier,
@@ -271,38 +351,35 @@ class Broker:
         order = self._orders.pop(order_id, None)
         if not order:
             return
-        self._client_orders.get(order.client_id, set()).discard(order_id)
-        if order.state == OrderState.DISPATCHED and order.supplier_id:
-            self._busy.pop(order.supplier_id, None)
+        self._cid_to_oid.get(order.client_id, set()).discard(order_id)
+        if order.status == OrderState.DISPATCHED and order.supplier_id:
+            self._sid_to_oid.pop(order.supplier_id, None)
 
     # -- Disconnect handling --
 
     def _handle_supplier_disconnect(self, supplier_id: bytes) -> None:
         with self._lock:
             info = self._suppliers.pop(supplier_id, None)
-            if info:
-                for pid in info.product_ids:
-                    q = self._available.get(pid)
-                    if q:
-                        try:
-                            q.remove(supplier_id)
-                        except ValueError:
-                            pass
-            order_id = self._busy.pop(supplier_id, None)
+            self._patterns.pop(supplier_id, None)
+            try:
+                self._ready.remove(supplier_id)
+            except ValueError:
+                pass
+            order_id = self._sid_to_oid.pop(supplier_id, None)
             if order_id:
                 order = self._orders.get(order_id)
                 if order:
-                    order.state = OrderState.QUEUED
+                    order.status = OrderState.QUEUED
                     order.supplier_id = b""
                     order.dispatched_at = 0.0
-                    self._queued[order.product_id].append(order_id)
+                    self._pid_to_oid[order.product_id].append(order_id)
         if info:
             logger.warning("Supplier disconnected")
         self._try_dispatch()
 
     def _handle_client_disconnect(self, client_id: bytes) -> None:
         with self._lock:
-            for oid in list(self._client_orders.pop(client_id, set())):
+            for oid in list(self._cid_to_oid.pop(client_id, set())):
                 self._remove_order(oid)
             self._clients.pop(client_id, None)
 
@@ -310,7 +387,7 @@ class Broker:
         now = time.time()
         with self._lock:
             stale_suppliers: set[bytes] = set()
-            for supplier_id, order_id in list(self._busy.items()):
+            for supplier_id, order_id in list(self._sid_to_oid.items()):
                 order = self._orders.get(order_id)
                 if (
                     order
@@ -323,28 +400,25 @@ class Broker:
         return len(stale_suppliers)
 
     def _check_liveness(self) -> None:
-        now = time.time()
+
         with self._lock:
-            dead_s = [
+            now = time.time()
+            dead_suppliers = [
                 i
                 for i, info in self._suppliers.items()
-                if info.last_seen > 0
-                and (now - info.last_seen) > self.supplier_timeout
+                if (now - info.last_seen) > self.supplier_timeout
             ]
-            dead_c = [
+            dead_clients = [
                 i
                 for i, info in self._clients.items()
                 if info.last_seen > 0
                 and (now - info.last_seen) > self.client_timeout
             ]
-            for k in [k for k, v in self._queued.items() if not v]:
-                del self._queued[k]
-            for k in [k for k, v in self._available.items() if not v]:
-                del self._available[k]
-        for i in dead_s:
-            self._handle_supplier_disconnect(i)
-        for i in dead_c:
-            self._handle_client_disconnect(i)
+
+            for i in dead_suppliers:
+                self._handle_supplier_disconnect(i)
+            for i in dead_clients:
+                self._handle_client_disconnect(i)
 
     # -- Socket processing --
 
@@ -419,7 +493,7 @@ class Broker:
     def stop(self) -> None:
         self._shutdown.set()
         if hasattr(self, "_poll_thread"):
-            self._poll_thread.join(timeout=1.0)
+            self._poll_thread.join(timeout=10.0)
         self._teardown_zmq()
 
     def get_stats(self) -> BrokerStats:
@@ -429,9 +503,7 @@ class Broker:
                 all_products.update(info.product_ids)
             return BrokerStats(
                 pending_orders=len(self._orders),
-                available_suppliers=sum(
-                    len(q) for q in self._available.values()
-                ),
+                available_suppliers=len(self._ready),
                 connected_clients=len(self._clients),
                 connected_suppliers=len(self._suppliers),
                 total_completed=self._total_completed,

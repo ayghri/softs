@@ -1,0 +1,2 @@
+- mode=worker
+- device.worker_gpu=0

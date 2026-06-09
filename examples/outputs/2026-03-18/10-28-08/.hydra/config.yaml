@@ -1,0 +1,20 @@
+mode: client
+log_level: INFO
+model:
+  teacher: Qwen/Qwen3-8B
+  student: Qwen/Qwen3-0.6B
+  seq_length: 128
+training:
+  batch_size: 2
+  steps: 10
+  learning_rate: 1.0e-05
+  temperature: 2.0
+  top_k: 64
+  top_p: 0.9
+  log_every: 2
+  save_path: ''
+softlabels:
+  slot_count: 4
+device:
+  worker_gpu: 0
+  student_gpu: 1

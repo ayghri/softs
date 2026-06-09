@@ -1,0 +1,40 @@
+# Layer-by-layer LLM distillation configuration
+#
+# One script per role (no mode flag); run each in its own terminal:
+#   python broker.py
+#   python supplier.py device.worker_gpu=0
+#   python client.py   device.student_gpu=0
+
+defaults:
+  - _self_
+
+# Logging level (DEBUG, INFO, WARNING, ERROR)
+log_level: INFO
+
+# Model settings
+model:
+  name: "Qwen/Qwen3-0.6B"
+  seq_length: 512
+
+# Training settings
+training:
+  batch_size: 4
+  samples_per_layer: 500
+  epochs_per_layer: 2
+  learning_rate: 1e-4
+  grad_accum_steps: 4
+
+# Softlabels settings
+softs:
+  slot_count: 16
+  dtype: bfloat16  # Tensor dtype for hidden states
+
+# Device settings
+device:
+  worker_gpu: 0  # GPU index for worker (teacher model)
+  student_gpu: 0  # GPU index for student (used when not using torchrun)
+
+# Hydra settings
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}

@@ -1,0 +1,4 @@
+- mode=client
+- device.student_gpu=1
+- training.steps=10
+- training.log_every=2

@@ -12,7 +12,7 @@ class Medium(ABC):
 
     def __init__(
         self,
-        address: str,
+        address: str | None,
         slot_size: int,
         num_slots: int,
         create=False,
@@ -28,12 +28,12 @@ class Medium(ABC):
     def attach(cls, address: str) -> "Medium": ...
 
     @abstractmethod
-    def write(self, slot_index: int, data: bytes) -> bool:
+    def write(self, slot_id: int, data: bytes) -> bool:
         """Write data at byte offset. Returns False if resource is gone."""
         ...
 
     @abstractmethod
-    def read(self, slot_index: int) -> bytes: ...
+    def read(self, slot_id: int) -> bytes: ...
 
     def close(self) -> None:
         pass

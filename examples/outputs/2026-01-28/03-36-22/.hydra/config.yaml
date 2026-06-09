@@ -1,0 +1,16 @@
+mode: worker
+model:
+  name: Qwen/Qwen3-0.6B
+  seq_length: 512
+training:
+  batch_size: 4
+  samples_per_layer: 500
+  epochs_per_layer: 2
+  learning_rate: 0.0001
+  grad_accum_steps: 4
+softlabels:
+  slot_count: 16
+  dtype: bfloat16
+device:
+  worker_gpu: 1
+  student_gpu: 0

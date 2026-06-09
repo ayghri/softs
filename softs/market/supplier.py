@@ -1,4 +1,4 @@
-"""Supplier process — generates samples and writes to transfer medium."""
+"""Supplier process - generates samples and writes to transfer medium."""
 
 import logging
 import threading
@@ -56,9 +56,7 @@ class Supplier:
             self._writer_cache[address] = medium
             return medium
         except Exception:
-            logger.warning(
-                f"Failed to attach to medium '{address}'", exc_info=True
-            )
+            logger.warning(f"Failed to attach to medium '{address}'", exc_info=True)
             return None
 
     def _send(self, cmd: bytes, payload: dict) -> dict:
@@ -81,9 +79,7 @@ class Supplier:
         self._backend.send_multipart(make_request(SupplierCmd.READY, {}))
 
     def _send_done(self, order_id: str, success: bool = True):
-        return self._send(
-            SupplierCmd.DONE, {"order_id": order_id, "success": success}
-        )
+        return self._send(SupplierCmd.DONE, {"order_id": order_id, "success": success})
 
     def _process_work(self, payload: dict) -> None:
         try:
@@ -95,12 +91,25 @@ class Supplier:
             data = self.generator_fn(work.product_id)
             writer = self._get_writer(work.address)
             if writer is None or not writer.write(work.offset, data):
+                logger.error(
+                    "Write failed for order %s (product=%s) to medium '%s' "
+                    "at offset %d - reporting failure to broker",
+                    work.order_id,
+                    work.product_id,
+                    work.address,
+                    work.offset,
+                )
                 self._writer_cache.pop(work.address, None)
                 self._send_done(work.order_id, success=False)
                 return
             self._send_done(work.order_id, success=True)
-        except Exception as e:
-            logger.error(f"Generator error: {e}")
+        except Exception:
+            logger.error(
+                "Generator error for order %s (product=%s)",
+                work.order_id,
+                work.product_id,
+                exc_info=True,
+            )
             self._send_done(work.order_id, success=False)
 
     def _main_loop(self) -> None:
@@ -128,9 +137,7 @@ class Supplier:
 
     def start(self) -> None:
         self._hello()
-        self._main_thread = threading.Thread(
-            target=self._main_loop, daemon=True
-        )
+        self._main_thread = threading.Thread(target=self._main_loop, daemon=True)
         self._main_thread.start()
 
     def stop(self) -> None:

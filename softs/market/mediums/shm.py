@@ -1,9 +1,12 @@
 """Shared memory transfer medium."""
 
+import logging
 import secrets
 from multiprocessing import shared_memory
 
 from .base import Medium
+
+logger = logging.getLogger(__name__)
 
 
 class ShmMedium(Medium):
@@ -26,25 +29,39 @@ class ShmMedium(Medium):
             name=address, create=create, size=slot_size * num_slots
         )
 
-    def write(self, slot_offset: int, data: bytes) -> bool:
+    def write(self, slot_id: int, data: bytes) -> bool:
+
         try:
             buf = self._shm.buf
-            buf[slot_offset : slot_offset + len(data)] = data  # type: ignore
+            buf[slot_id : slot_id + len(data)] = data
             return True
         except Exception:
+            logger.warning(
+                "shm write failed at offset %d (len %d) on '%s'",
+                slot_id,
+                len(data),
+                self.address,
+                exc_info=True,
+            )
             return False
 
     def read(self, slot_id: int) -> bytes:
         off = slot_id * self.slot_size
-        return bytes(self._shm.buf[off : off + self.slot_size])  # type: ignore
+        return bytes(self._shm.buf[off : off + self.slot_size])
 
     @classmethod
     def attach(cls, address: str) -> "ShmMedium":
         return cls(address=address, slot_size=0, num_slots=0, create=False)
 
     def close(self) -> None:
-        self._shm.close()
+        try:
+            self._shm.close()
+        except Exception:
+            pass
 
     def unlink(self) -> None:
         if self.is_owner:
-            self._shm.unlink()
+            try:
+                self._shm.unlink()
+            except FileNotFoundError:
+                pass

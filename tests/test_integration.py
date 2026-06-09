@@ -100,4 +100,10 @@ class TestSlotManagement:
             client.request_slot("test")
         time.sleep(0.3)
         client.discard()
+        # Dispatched orders are quarantined until they FULFILL; drain them so
+        # every slot returns to the free pool (no leaks, no stale data served).
+        deadline = time.time() + 2.0
+        while len(client._free_slots) < client.slot_count and time.time() < deadline:
+            client.poll_completions(50)
         assert len(client._pending_slots) == 0
+        assert len(client._free_slots) == client.slot_count

@@ -1,22 +1,26 @@
-Soft Labels Package
+Soft Labels Market
 ===================
 
 **Async Soft Labels Generation with PyTorch**
 
-``softs`` is a single-machine data pipeline for on-the-fly generation of
-training data.  A central **broker** routes requests from **clients** to
-**workers** based on ``model_id``.  Workers generate data and write it to a
-pluggable transfer medium.  Clients read the results with zero-copy access.
+``softs`` is a data pipeline for on-the-fly generation of (training) data.
+It's built on a **Marketplace** pattern where a central :class:`~softs.Broker` routes orders from :class:`~softs.Client` to
+a :class:`~softs.Supplier` that provides the product (the model id).  Suppliers generate information
+and write it to a pluggable transfer :class:`~softs.Medium`.  Clients read the results 
+from the delivery address when it's ready.
+
+A key design principle is to prevent Client-Supplier dependencies. All coordination is handled by the broker.
+More on the design arch in :doc:`architecture`.
 
 Key Features
 ------------
 
-- **Model-aware routing**: clients request by ``model_id``, broker dispatches to matching workers
-- **Zero-copy data plane**: data flows through shared memory (or filesystem, TCP)
-- **Cancel support**: clients can ``discard()`` all pending requests or ``cancel()`` individual ones
-- **Fault tolerant**: broker detects dead workers/clients, re-queues failed work, workers send ``GOODBYE`` on exit
-- **Timeouts**: client and worker ``send_timeout_ms`` prevents hanging when broker is down
-- **Pluggable mediums**: shared memory, filesystem (mmap), TCP — or extend ``Medium``
+- **Fault tolerant broker**: broker detects dead suppliers/clients, re-queues failed work.
+- **Fault tolerant parties**: suppliers/clients can detect and reset on broker failure/disconnection.
+- **Zero-copy when possible**: when data flows through shared memory
+- **Model-aware routing**: clients order by ``product_id``, broker dispatches to matching suppliers
+- **Cancel support**: clients can ``discard()`` all pending orders or ``cancel()`` individual ones
+- **Pluggable mediums**: shared memory, filesystem (mmap), TCP - or extend ``Medium``
 - **PyTorch integration**: ``SoftIterableDataset`` for seamless ``DataLoader`` use
 
 Quick Example
@@ -27,54 +31,65 @@ Quick Example
 .. code-block:: python
 
     from softs import Broker, EndpointConfig
-    Broker(endpoints=EndpointConfig()).run()
 
-**2. Start a worker:**
+    broker = Broker(endpoints=EndpointConfig())
+    broker.start()
+    # ... broker.stop() on shutdown
+
+**2. Start a supplier:**
 
 .. code-block:: python
 
     import torch
-    from softs import Worker, BatchConfig, TensorSpec, EndpointConfig
+    from softs import Supplier, ShmMedium, BatchConfig, TensorSpec, EndpointConfig
 
     config = BatchConfig([
-        TensorSpec("x", (32, 3, 224, 224), "float32"),
-        TensorSpec("y", (32, 1000), "float32"),
+        TensorSpec("x", (3, 224, 224), "float32"),
+        TensorSpec("y", (1000,), "float32"),
     ])
 
-    def generate(model_id: str) -> bytes:
+    def generate(product_id: str) -> bytes:
         return config.encode(
-            x=torch.randn(32, 3, 224, 224),
-            y=torch.randn(32, 1000),
+            x=torch.randn(3, 224, 224),
+            y=torch.randn(1000),
         )
 
-    Worker(
+    supplier = Supplier(
         generator_fn=generate,
-        model_ids=["resnet"],
+        product_ids=["resnet"],
+        endpoint=EndpointConfig().backend,
+        medium_cls=ShmMedium,
         slot_size=config.nbytes(),
-        endpoints=EndpointConfig(),
-    ).run()
+    )
+    supplier.start()
+    # ... supplier.stop() on shutdown
 
 **3. Train:**
 
 .. code-block:: python
 
-    from softs import Client, BatchConfig, TensorSpec, EndpointConfig
+    from softs import Client, ShmMedium, BatchConfig, TensorSpec, EndpointConfig
 
     config = BatchConfig([
-        TensorSpec("x", (32, 3, 224, 224), "float32"),
-        TensorSpec("y", (32, 1000), "float32"),
+        TensorSpec("x", (3, 224, 224), "float32"),
+        TensorSpec("y", (1000,), "float32"),
     ])
 
-    client = Client(slot_count=8, batch_config=config, endpoints=EndpointConfig())
+    client = Client(
+        endpoint=EndpointConfig().frontend,
+        medium_cls=ShmMedium,
+        slot_size=config.nbytes(),
+        num_slots=8,
+    )
     client.hello()
 
     for _ in range(100):
         slot = client.request_sample("resnet", timeout_ms=5000)
         if slot is None:
             continue
-        batch = config.decode(client.medium.read(slot))
+        sample = config.decode(client.medium.read(slot))
         client.release_slot(slot)
-        # batch["x"].shape == (32, 3, 224, 224)
+        # sample["x"].shape == (3, 224, 224)
 
     client.close()
 

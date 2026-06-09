@@ -1,0 +1,18 @@
+# Example BatchConfig YAML
+# Load with: BatchConfig.from_yaml("batch_config.yaml")
+#
+# Or use with Hydra:
+#   batch_config:
+#     _target_: softs.BatchConfig
+#     specs: ${file:batch_config.yaml}
+
+specs:
+  # Input tensor (e.g., layer input hidden states)
+  - name: x
+    shape: [512, 768]  # (seq_length, hidden_size)
+    dtype: bfloat16
+
+  # Target tensor (e.g., layer output hidden states)
+  - name: y
+    shape: [512, 768]
+    dtype: bfloat16

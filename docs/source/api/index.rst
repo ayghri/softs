@@ -10,3 +10,4 @@ API Reference
    dataset
    config
    mediums
+   catcher

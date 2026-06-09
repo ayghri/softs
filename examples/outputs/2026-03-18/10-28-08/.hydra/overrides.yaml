@@ -1,0 +1,3 @@
+- mode=client
+- training.steps=10
+- training.log_every=2

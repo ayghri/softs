@@ -1,79 +1,79 @@
 # softs
 
-A broker-based data pipeline for distributed teacher-student training in PyTorch.
+A broker-based, single-machine data pipeline for on-the-fly training-data generation in PyTorch (e.g. teacher-student distillation).
 
 ## Overview
 
-`softs` provides a **data-agnostic** message routing system for teacher-student workflows:
+`softs` provides a **data-agnostic** message-routing system:
 
-- **Broker**: Routes messages between students and workers. Knows nothing about the data.
-- **Workers**: Generate samples on-demand, write raw bytes to student-owned memory.
-- **Students**: Own memory slots, request samples, read and decode bytes.
+- **Broker**: Routes orders between clients and suppliers. Knows nothing about the data.
+- **Suppliers**: Generate samples on demand and write raw bytes into client-owned memory.
+- **Clients**: Own memory slots, order samples by `product_id`, then read and decode the bytes.
 
-The library only moves bytes. What those bytes represent is entirely up to your application. Use `BatchConfig` for PyTorch tensor encoding/decoding.
+The library only moves bytes; what those bytes represent is up to your application. Use `BatchConfig` for PyTorch tensor encoding/decoding.
 
 ## Key Features
 
-- **Zero-copy transfer**: Workers write directly to student shared memory
-- **Async pipeline**: Students train while workers generate the next batch
-- **Model switching**: Change teacher models mid-training (e.g., layer-by-layer distillation)
-- **Fault tolerance**: Workers/students can crash and restart independently
-- **DDP compatible**: Works with PyTorch's DistributedDataParallel
+- **Zero-copy transfer**: suppliers write directly into client shared memory
+- **Async pipeline**: clients train while suppliers generate the next sample
+- **Model switching**: change the requested `product_id` mid-training (e.g. layer-by-layer distillation)
+- **Fault tolerance**: suppliers/clients can crash and restart independently; the broker re-queues in-flight work
+- **Pluggable mediums**: shared memory (default), memory-mapped file, or TCP
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                           BROKER                                 │
-│                   (message router, data-agnostic)                │
-│                                                                  │
-│   Frontend        Backend         Control        ControlPub      │
-│   (ROUTER)        (ROUTER)       (ROUTER)         (PUB)          │
-│      ▲               ▲              ▲               │            │
-└──────┼───────────────┼──────────────┼───────────────┼────────────┘
-       │               │              │               │
-  ┌────┴────┐    ┌─────┴─────┐   ┌────┴────┐    ┌────┴────┐
-  │ Student │    │  Worker   │   │Student 0│    │ Workers │
-  │DataLoader    │ (teacher) │   │(leader) │    │  (SUB)  │
-  │ workers │    │           │   │         │    │         │
-  └─────────┘    └───────────┘   └─────────┘    └─────────┘
++---------------------------------------------+
+|                   BROKER                     |
+|          (message router, data-agnostic)     |
+|                                              |
+|     Frontend (ROUTER)     Backend (ROUTER)   |
+|          ^                      ^            |
++----------+----------------------+------------+
+           |                      |
+     +-----+------+        +------+------+
+     |  Clients   |        |  Suppliers  |
+     | (DEALER)   |        |  (DEALER)   |
+     +-----+------+        +------+------+
+           |                      |
+           |   writes bytes into  |
+           +----->  Medium  <-----+
+              (shm / mmap / tcp)
 ```
+
+Two ZMQ ROUTER sockets: a **frontend** for clients and a **backend** for suppliers. There is no separate control or pub/sub channel — model switching is driven entirely by the client (see below).
 
 ### Message Flow
 
-1. **Student** creates shared memory slots and sends `REQUEST` with `{token, shm_name, slot_offset}`
-2. **Broker** queues the request, assigns it to an available **Worker** via `WORK`
-3. **Worker** generates sample bytes using your `generator_fn`, writes directly to shared memory
-4. **Worker** sends `DONE` to broker, broker sends `COMPLETE` to student
-5. **Student** reads bytes from shared memory, decodes tensors, trains
+1. **Client** creates a medium with one or more slots and sends `ORDER` with `{order_id, product_id, address, offset}`
+2. **Broker** queues the order and assigns it to an available **supplier** via `WORK`
+3. **Supplier** generates sample bytes with your `generator_fn(product_id)` and writes them directly into the medium
+4. **Supplier** sends `DONE`; the broker sends `FULFILLED` to the client
+5. **Client** reads the bytes from the medium, decodes tensors, and trains
 
 ### Model Switching
 
-Student rank 0 (leader) can change the model at any time:
+A client switches models by discarding pending orders and ordering with a new `product_id`. With the dataset wrapper:
 
 ```python
-client.set_model("layer_5")  # Workers now generate for layer_5
+dataset.set_model("layer_5")   # subsequent samples are generated for layer_5
 ```
 
-This:
-1. Increments a **generation counter**
-2. Broadcasts new model to all workers via PUB/SUB
-3. Discards any pending work from the old generation
-4. Workers start generating for the new model immediately
+Internally this calls `client.discard()` and resumes requesting the new `product_id`. The switch is **fenced**: the client bumps a generation counter, cancels orders the broker has not yet dispatched, and drops any in-flight results from the previous model (their slots are reclaimed only once the supplier's write completes). So you never read a stale sample after a switch. There is no cross-process broadcast, though — coordinate switches across processes yourself (e.g. `torch.distributed.barrier()` for DDP).
 
 ## Installation
 
 ```bash
 pip install softs
-# or
-poetry add softs
 ```
 
-**Dependencies**: `pyzmq`, `torch`, `numpy`
+**Dependencies**: `pyzmq`, `msgpack`, `torch`, `numpy`, `pyyaml`
 
 ## Quick Start
 
 ### 1. Define your data format with BatchConfig
+
+`BatchConfig` describes the tensors in **one sample** (no batch dimension):
 
 ```python
 from softs import BatchConfig, TensorSpec
@@ -87,59 +87,80 @@ config = BatchConfig([
 ### 2. Start the broker
 
 ```python
-from softs import Broker, setup_logging
+from softs import Broker, EndpointConfig, setup_logging
 
 setup_logging("INFO")
-Broker().run()
+endpoints = EndpointConfig()
+broker = Broker(endpoints=endpoints)
+broker.start()       # background thread; broker.stop() to shut down
 ```
 
-### 3. Start worker(s)
+### 3. Start supplier(s)
 
 ```python
 import torch
-from softs import Worker, setup_logging
+from softs import Supplier, ShmMedium
 
-setup_logging("INFO")
-
-def generate_sample(model_id: str, model_cfg: dict | None) -> bytes:
-    # Your generation logic - runs once per sample
+def generate_sample(product_id: str) -> bytes:
     x = torch.randn(3, 224, 224)
     y = torch.randn(1000)
     return config.encode(x=x, y=y)
 
-Worker(
+supplier = Supplier(
     generator_fn=generate_sample,
+    product_ids=["my_model"],
+    endpoint=endpoints.backend,
+    medium_cls=ShmMedium,
     slot_size=config.nbytes(),
-).run()
+)
+supplier.start()     # background thread; supplier.stop() to shut down
 ```
 
-### 4. Run student training
+### 4. Train
+
+Either drive a `Client` directly:
 
 ```python
-from softs import StudentClient, DistillIterableDataset, setup_logging
+from softs import Client, ShmMedium
 
-setup_logging("INFO")
-
-client = StudentClient(
-    student_rank=0,
-    slot_count=16,
-    batch_config=config,
+client = Client(
+    endpoint=endpoints.frontend,
+    medium_cls=ShmMedium,
+    slot_size=config.nbytes(),
+    num_slots=16,
 )
 client.hello()
-client.set_model("my_model")
 
-dataset = DistillIterableDataset(
-    student_rank=0,
-    generation_value=client.generation_value,
-    slot_count=8,
-    batch_config=config,
-)
-
-for batch in dataset:
-    x, y = batch["x"], batch["y"]
-    # Training loop...
+for _ in range(100):
+    slot = client.request_sample("my_model", timeout_ms=5000)
+    if slot is None:
+        continue
+    sample = config.decode(client.medium.read(slot))
+    client.release_slot(slot)
+    # sample["x"].shape == (3, 224, 224)
 
 client.close()
+```
+
+…or use the PyTorch dataset wrapper:
+
+```python
+from torch.utils.data import DataLoader
+from softs import SoftIterableDataset, ShmMedium
+
+dataset = SoftIterableDataset(
+    model_id="my_model",
+    endpoint=endpoints.frontend,
+    batch_config=config,
+    medium_cls=ShmMedium,
+    num_slots=16,
+)
+loader = DataLoader(dataset, batch_size=32, num_workers=0)
+
+for batch in loader:
+    x, y = batch["x"], batch["y"]   # x.shape == (32, 3, 224, 224)
+    # training loop...
+    break
 ```
 
 ## BatchConfig API
@@ -149,27 +170,18 @@ client.close()
 ```python
 from softs import BatchConfig, TensorSpec
 
-# Define specs
 config = BatchConfig([
     TensorSpec("hidden", (512, 768), "bfloat16"),
     TensorSpec("labels", (512,), "int64"),
 ])
 
-# Total bytes
-config.nbytes()  # -> 790528
-
-# Encode tensors to bytes
+config.nbytes()                      # size of one encoded sample, in bytes
 data = config.encode(hidden=hidden_tensor, labels=label_tensor)
-
-# Decode bytes to dict of tensors
-tensors = config.decode(data)
-
-# Decode a single tensor
+tensors = config.decode(data)        # -> {"hidden": ..., "labels": ...}
 hidden = config.decode_single(data, "hidden")
 
-# Properties
-config.tensor_names  # ['hidden', 'labels']
-config.get_spec("hidden")  # TensorSpec object
+config.tensor_names                  # ['hidden', 'labels']
+config.get_spec("hidden")            # TensorSpec
 ```
 
 **Supported dtypes**: `float64`, `float32`, `float16`, `bfloat16`, `int64`, `int32`, `int16`, `int8`, `uint8`, `bool`
@@ -179,7 +191,6 @@ config.get_spec("hidden")  # TensorSpec object
 ```python
 config = BatchConfig.from_yaml("config.yaml")
 
-# Or from dict
 config = BatchConfig.from_dict({
     "specs": [
         {"name": "x", "shape": [512, 768], "dtype": "bfloat16"},
@@ -207,117 +218,45 @@ config = instantiate(cfg.batch_config)
 
 ## Transfer Mediums
 
-By default, softs uses **POSIX shared memory** for zero-copy data transfer. The architecture supports other mediums through the `Medium` protocol.
+By default `softs` uses **POSIX shared memory** for zero-copy transfer. The client owns the medium; suppliers attach to it by address and write into it.
 
-### How Mediums Work
+- `ShmMedium` — POSIX shared memory (default)
+- `FilesystemMedium` — memory-mapped file
+- `TCPMedium` — TCP sockets; the client runs a server, suppliers connect
 
-1. **Students** create and own the medium (e.g., shared memory segment)
-2. **Broker** routes opaque addressing info (`shm_name`, `slot_offset`) to workers
-3. **Workers** write directly to the medium using the addressing info
-4. **Students** read from the medium after receiving completion notification
-
-The broker never touches the actual data - it only routes metadata.
-
-### Default: SharedMemoryManager
+Select a medium by passing `medium_cls` to both the `Client`/dataset and the `Supplier`:
 
 ```python
-from softs.mediums import SharedMemoryManager
+from softs import Client, Supplier, FilesystemMedium
 
-# Students create shm (read_only=True = create owner)
-shm = SharedMemoryManager(slot_count=16, slot_stride=1024, read_only=True)
-
-# Workers attach by name (read_only=False = attach)
-shm = SharedMemoryManager(slot_count=16, slot_stride=1024, read_only=False, run_id=run_id)
+Supplier(..., medium_cls=FilesystemMedium)
+Client(..., medium_cls=FilesystemMedium)
 ```
 
 ### Custom Mediums
 
-Implement the `Medium` protocol or extend `MediumBase`:
+Extend the `Medium` base class:
 
 ```python
-from softs.mediums import MediumBase
+from softs.market.mediums import Medium
 
-class FileMedium(MediumBase):
-    """File-based medium (example for network filesystems)."""
+class MyMedium(Medium):
+    def __init__(self, address, slot_size, num_slots, create=False, **kwargs):
+        super().__init__(address, slot_size, num_slots, create)
+        # set up backing storage at `address`
 
-    def __init__(self, slot_count: int, slot_stride: int, path: str):
-        self._path = path
-        self._slot_count = slot_count
-        self._slot_stride = slot_stride
-        self._file = open(path, 'w+b')
-        self._file.truncate(slot_count * slot_stride)
+    @classmethod
+    def attach(cls, address: str) -> "MyMedium":
+        return cls(address=address, slot_size=0, num_slots=0, create=False)
 
-    @property
-    def buf_name(self) -> str:
-        return self._path
+    def write(self, slot_offset: int, data: bytes) -> bool:
+        ...   # return False if the resource is gone
 
-    @property
-    def slot_count(self) -> int:
-        return self._slot_count
+    def read(self, slot_id: int) -> bytes:
+        ...   # return slot_id * self.slot_size .. + self.slot_size
 
-    @property
-    def slot_stride(self) -> int:
-        return self._slot_stride
-
-    def read_slot_tensors(self, slot_id: int) -> bytes:
-        offset = slot_id * self._slot_stride
-        self._file.seek(offset)
-        return self._file.read(self._slot_stride)
-
-    def close(self) -> None:
-        self._file.close()
-
-    def unlink(self) -> None:
-        import os
-        os.unlink(self._path)
-```
-
-Potential medium implementations:
-- **GPU Direct**: Use CUDA IPC for GPU-to-GPU transfer
-- **Network**: Use RDMA or TCP for multi-node setups
-- **Memory-mapped files**: For persistence or network filesystems
-
-## Running with DDP
-
-```bash
-# Terminal 1: Broker
-python -c "from softs import Broker; Broker().run()"
-
-# Terminal 2: Worker(s) - can run multiple
-python worker.py
-
-# Terminal 3: DDP students
-torchrun --nproc_per_node=2 student.py
-```
-
-For multi-GPU students:
-- Only rank 0 creates the main `StudentClient` and calls `set_model()`
-- Other ranks listen for model changes via PUB/SUB
-
-```python
-if rank == 0:
-    client.set_model("layer_0")
-else:
-    client.start_sub_listener()
-```
-
-## Example: Layer-by-Layer LLM Distillation
-
-See `examples/distill_llm.py` for a complete example that:
-1. Loads a teacher LLM
-2. Distills layer-by-layer (switches model per layer)
-3. Uses Hydra for configuration
-4. Supports DDP training
-
-```bash
-# Start broker
-python distill_llm.py mode=broker
-
-# Start worker (loads teacher model)
-python distill_llm.py mode=worker device.worker_gpu=0
-
-# Start student training (DDP)
-torchrun --nproc_per_node=2 distill_llm.py mode=student
+    def close(self) -> None: ...
+    def unlink(self) -> None: ...
 ```
 
 ## API Reference
@@ -328,86 +267,83 @@ torchrun --nproc_per_node=2 distill_llm.py mode=student
 setup_logging(level: int | str = "INFO") -> None
 ```
 
-Configure logging for all softs modules.
-
 ### Broker
 
 ```python
 Broker(
-    frontend_endpoint: str = "ipc:///tmp/softs_frontend.sock",
-    backend_endpoint: str = "ipc:///tmp/softs_backend.sock",
-    control_endpoint: str = "ipc:///tmp/softs_control.sock",
-    control_pub_endpoint: str = "ipc:///tmp/softs_control_pub.sock",
+    endpoints: EndpointConfig,
+    supplier_timeout: float = 60.0,
+    client_timeout: float = 120.0,
+    max_queue_per_product: int = 5000,
 )
 
-broker.run()  # Blocking
-broker.start()  # Non-blocking (background thread)
+broker.start()          # non-blocking (background poll thread)
 broker.stop()
-broker.stats  # BrokerStats with metrics
+broker.get_stats()      # -> BrokerStats
 ```
 
-### Worker
+### Supplier
 
 ```python
-Worker(
-    generator_fn: Callable[[str, dict | None], bytes],  # model_id, model_cfg -> bytes
-    slot_size: int,  # Expected bytes per sample
-    backend_endpoint: str = ...,
-    control_pub_endpoint: str = ...,
-    worker_id: int | None = None,  # Defaults to PID
+Supplier(
+    generator_fn: Callable[[str], bytes],   # product_id -> bytes
+    product_ids: list[str],
+    endpoint: str,                          # EndpointConfig.backend
+    medium_cls: type[Medium],
+    slot_size: int,
+    send_timeout_ms: int = 10000,
 )
 
-worker.run()  # Blocking
-worker.start()  # Non-blocking
-worker.stop()
-worker.generation  # Current generation counter
-worker.model_id  # Current model ID
+supplier.start()
+supplier.stop()
 ```
 
-### StudentClient
+### Client
 
 ```python
-StudentClient(
-    student_rank: int,  # 0 = leader
-    slot_count: int,  # Shared memory slots
-    batch_config: BatchConfig,
-    frontend_endpoint: str = ...,
-    control_endpoint: str = ...,
-    control_pub_endpoint: str = ...,
+Client(
+    endpoint: str,                          # EndpointConfig.frontend
+    medium_cls: type[Medium],
+    slot_size: int,
+    num_slots: int,
+    address: str | None = None,
+    send_timeout_ms: int = 5000,
 )
 
-client.hello() -> dict  # Register with broker
-client.set_model(model_id, model_cfg=None) -> int  # Set model (leader only), returns generation
-client.request_sample(timeout_ms=1000) -> SampleRef | None
-client.release_slot(slot_id)  # Return slot to pool
-client.start_sub_listener()  # Listen for model changes (non-leader)
-client.generation  # Current generation
-client.generation_value  # multiprocessing.Value for sharing with dataset
+client.hello() -> dict
+client.request_sample(product_id, timeout_ms=1000) -> int | None   # slot id
+client.request_slot(product_id) -> str | None                       # order id (async)
+client.release_slot(slot_id)
+client.discard() -> int                  # cancel all pending orders
+client.cancel(order_id) -> bool          # cancel one order
+client.get_stats() -> dict
 client.close()
 ```
 
-### DistillIterableDataset
+### SoftIterableDataset / SoftDataLoader
 
 ```python
-DistillIterableDataset(
-    student_rank: int,
-    generation_value: Value,  # From client.generation_value
-    slot_count: int,
+SoftIterableDataset(
+    model_id: str,
+    endpoint: str,                          # EndpointConfig.frontend
     batch_config: BatchConfig,
-    frontend_endpoint: str = ...,
+    medium_cls: type[Medium],
+    num_slots: int = 8,
     max_retries: int = 10,
     retry_delay: float = 0.01,
 )
+dataset.set_model(model_id)                # switch product_id
+dataset.model_id                           # current product_id
 ```
 
-Infinite `IterableDataset` yielding `dict[str, Tensor]`.
+`SoftDataLoader` takes the same arguments plus standard `DataLoader` kwargs and exposes `set_model(...)`.
 
 ### BatchConfig / TensorSpec
 
 ```python
 TensorSpec(name: str, shape: tuple[int, ...], dtype: str)
-spec.nbytes  # Bytes for this tensor
-spec.torch_dtype  # torch.dtype
+spec.nbytes
+spec.torch_dtype
 
 BatchConfig(specs: list[TensorSpec])
 config.nbytes() -> int
@@ -420,53 +356,22 @@ config.get_spec(name) -> TensorSpec
 
 ## Protocol Details
 
-The broker uses ZeroMQ with four sockets:
+The broker uses ZeroMQ with two ROUTER sockets:
 
 | Socket | Type | Purpose |
 |--------|------|---------|
-| Frontend | ROUTER | Student requests (REQUEST, HELLO, STATS) |
-| Backend | ROUTER | Worker communication (READY, WORK, DONE) |
-| Control | ROUTER | Leader commands (SET_MODEL, STOP) |
-| ControlPub | PUB | Broadcasts (MODEL changes, STOP) |
+| Frontend | ROUTER | Client commands (`HELLO`, `ORDER`, `CANCEL`, `DISCARD`, `STATS`) |
+| Backend | ROUTER | Supplier commands (`HELLO`, `READY`, `DONE`, `GOODBYE`) |
 
-Commands:
-- `HELLO`: Register student/worker
-- `REQUEST`: Student requests a sample slot to be filled
-- `READY`: Worker is available for work
-- `WORK`: Broker assigns work to worker
-- `DONE`: Worker completed writing to slot
-- `COMPLETE`: Broker notifies student slot is ready
-- `SET_MODEL`: Leader sets new model
-- `STOP`: Shutdown workers
+Broker-initiated messages: `WORK` (to a supplier) and `FULFILLED` (to a client). Payloads are msgpack-encoded `[command, payload]` frames.
 
-## Troubleshooting
+## Fault Tolerance
 
-### "Shared memory name too long" (macOS)
-
-macOS limits shared memory names to 31 characters. The library uses short prefixes (`sl_`).
-
-### Stale samples after model switch
-
-The generation counter ensures stale samples are discarded. If you see stale data, ensure:
-1. Dataset checks `generation_value` before yielding
-2. You're using `client.generation_value` (shared with dataset)
-
-### Worker not receiving work
-
-Check:
-1. Broker is running
-2. Worker called `hello()` and is in main loop
-3. Student has called `set_model()` (workers wait for a model)
-
-### Memory not released
-
-Call `client.close()` to properly unlink shared memory. Use context managers:
-
-```python
-with StudentClient(...) as client:
-    # ...
-# Automatically closes and unlinks
-```
+- **Supplier dies**: broker detects via liveness timeout and re-queues in-flight work
+- **Supplier generator fails**: reports `success=False`; broker re-queues to another supplier
+- **Supplier exits gracefully**: sends `GOODBYE`; broker removes it immediately
+- **Client dies**: broker cancels all its pending orders
+- **Broker down**: client/supplier `send_timeout_ms` prevents an infinite hang
 
 ## License
 

@@ -1,4 +1,4 @@
-"""Wire protocol for broker ↔ client/supplier communication."""
+"""Wire protocol for broker <-> client/supplier communication."""
 
 from dataclasses import dataclass, field
 
@@ -18,33 +18,34 @@ class EndpointConfig:
 
 
 class ClientCmd:
-    """Commands on the client ↔ broker channel (frontend)."""
+    """Commands on the client <-> broker channel (frontend)."""
 
     HELLO = b"HELLO"
     ORDER = b"ORDER"
     CANCEL = b"CANCEL"
     DISCARD = b"DISCARD"
     STATS = b"STATS"
-    FULFILLED = b"FULFILLED"  # broker → client
+    FULFILLED = b"FULFILLED"  # broker -> client
+    FAILED = b"FAILED"  # broker -> client: order permanently failed, free its slot
 
 
 class SupplierCmd:
-    """Commands on the supplier ↔ broker channel (backend)."""
+    """Commands on the supplier <-> broker channel (backend)."""
 
     HELLO = b"HELLO"
     GOODBYE = b"GOODBYE"
     READY = b"READY"
     DONE = b"DONE"
-    WORK = b"WORK"  # broker → supplier
-    TERMINATE = b"TERMINATE"  # broker → supplier
+    WORK = b"WORK"  # broker -> supplier
+    TERMINATE = b"TERMINATE"  # broker -> supplier
 
 
 class OrderState:
-    QUEUED = "queued"
-    DISPATCHED = "dispatched"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
+    QUEUED = b"QUEUED"
+    DISPATCHED = b"DISPATCHED"
+    COMPLETED = b"COMPLETED"
+    FAILED = b"FAILED"
+    CANCELLED = b"CANCELLED"
 
 
 # -- Peer tracking --
@@ -102,13 +103,14 @@ class OrderDone:
 @dataclass
 class Order:
     order_id: str
-    client_id: bytes
     product_id: str
     address: str
     offset: int
-    state: str = OrderState.QUEUED
+    client_id: bytes
     supplier_id: bytes = b""
+    status = OrderState.QUEUED
     dispatched_at: float = 0.0
+    attempts: int = 0
 
 
 @dataclass
@@ -125,7 +127,7 @@ class BrokerStats:
 
 
 def encode_payload(data: dict) -> bytes:
-    return msgpack.packb(data, use_bin_type=True)
+    return msgpack.packb(data, use_bin_type=True)  # type: ignore
 
 
 def decode_payload(data: bytes) -> dict:

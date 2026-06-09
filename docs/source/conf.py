@@ -69,7 +69,6 @@ autodoc_default_options = {
     "undoc-members": True,
     "exclude-members": "__weakref__",
 }
-autodoc_mock_imports = ["ray", "msgpack"]
 autodoc_typehints = "description"
 autodoc_class_signature = "separated"
 

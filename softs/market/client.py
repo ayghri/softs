@@ -42,8 +42,13 @@ class Client:
 
         self._free_slots: deque[int] = deque(range(num_slots))
         self._pending_slots: dict[str, int] = {}
+        self._pending_gen: dict[str, int] = {}
         self._completed_slots: deque[int] = deque()
         self._slot_lock = threading.Lock()
+        # Bumped on discard(). Orders carry the generation they were placed in;
+        # a slot fulfilled under an old generation is freed (its data dropped)
+        # rather than served, so stale supplier writes can't be read as fresh.
+        self._generation = 0
 
         self._order_counter = 0
         self._order_lock = threading.Lock()
@@ -66,22 +71,9 @@ class Client:
     def _drain_stale_replies(self) -> None:
         """Consume any messages sitting in the socket buffer (stale replies from timeouts)."""
         while self._market.poll(0):
-            frames = self._market.recv_multipart()
-            if len(frames) >= 2 and frames[0] == ClientCmd.FULFILLED:
-                token = (
-                    decode_payload(frames[1]).get("order_id")
-                    if frames[1]
-                    else None
-                )
-                if token:
-                    with self._slot_lock:
-                        slot_id = self._pending_slots.pop(token, None)
-                        if slot_id is not None:
-                            self._completed_slots.append(slot_id)
+            self._handle_reply(self._market.recv_multipart())
 
-    def _send(
-        self, cmd: bytes, payload: dict, timeout_ms: int | None = None
-    ) -> dict:
+    def _send(self, cmd: bytes, payload: dict, timeout_ms: int | None = None) -> dict:
         """Send request and wait for reply. Returns error dict on timeout."""
         self._drain_stale_replies()
         timeout = timeout_ms or self.send_timeout_ms
@@ -121,25 +113,68 @@ class Client:
 
         with self._slot_lock:
             self._pending_slots[order_id] = slot_id
+            self._pending_gen[order_id] = self._generation
         return order_id
+
+    def _retire(self, order_id: str) -> None:
+        """Reclaim a fulfilled order's slot. Must hold _slot_lock.
+
+        Current-generation slots become available to serve; slots from a
+        superseded generation are freed and their (stale) data dropped.
+        """
+        slot_id = self._pending_slots.pop(order_id, None)
+        gen = self._pending_gen.pop(order_id, None)
+        if slot_id is None:
+            return
+        if gen == self._generation:
+            self._completed_slots.append(slot_id)
+        else:
+            self._free_slots.append(slot_id)
+
+    def _free_failed(self, order_id: str) -> None:
+        """Free a permanently-failed order's slot. Must hold _slot_lock.
+
+        The broker gave up on this order (FAILED); its slot was never written,
+        so reclaim it without serving any data.
+        """
+        self._pending_gen.pop(order_id, None)
+        slot_id = self._pending_slots.pop(order_id, None)
+        if slot_id is not None:
+            self._free_slots.append(slot_id)
+
+    def _handle_reply(self, frames: list) -> bool:
+        """Process one broker->client frame (FULFILLED/FAILED).
+
+        Returns True only for a FULFILLED completion (a slot became available).
+        """
+        if len(frames) < 2 or frames[0] not in (
+            ClientCmd.FULFILLED,
+            ClientCmd.FAILED,
+        ):
+            return False
+        token = decode_payload(frames[1]).get("order_id") if frames[1] else None
+        if not token:
+            return False
+        with self._slot_lock:
+            if frames[0] == ClientCmd.FULFILLED:
+                self._retire(token)
+                return True
+            self._free_failed(token)
+        return False
 
     def poll_completions(self, timeout_ms: int = 0) -> int:
         count = 0
+        got_any = False
         while True:
-            if not self._market.poll(timeout_ms if count == 0 else 0):
+            if not self._market.poll(timeout_ms if not got_any else 0):
                 break
             frames = self._market.recv_multipart()
-            if len(frames) >= 2 and frames[0] == ClientCmd.FULFILLED:
-                token = (
-                    decode_payload(frames[1]).get("order_id")
-                    if frames[1]
-                    else None
-                )
-                if token:
-                    with self._slot_lock:
-                        slot_id = self._pending_slots.pop(token, None)
-                        if slot_id is not None:
-                            self._completed_slots.append(slot_id)
+            if len(frames) >= 2 and frames[0] in (
+                ClientCmd.FULFILLED,
+                ClientCmd.FAILED,
+            ):
+                got_any = True
+                if self._handle_reply(frames):
                     count += 1
         return count
 
@@ -147,34 +182,17 @@ class Client:
         poller = zmq.Poller()
         poller.register(self._market, zmq.POLLIN)
         while dict(poller.poll(0)):
-            frames = self._market.recv_multipart()
-            if len(frames) >= 2 and frames[0] == ClientCmd.FULFILLED:
-                token = (
-                    decode_payload(frames[1]).get("order_id")
-                    if frames[1]
-                    else None
-                )
-                if token:
-                    with self._slot_lock:
-                        slot_id = self._pending_slots.pop(token, None)
-                        if slot_id is not None:
-                            self._free_slots.append(slot_id)
+            self._handle_reply(self._market.recv_multipart())
 
     def get_completed(self) -> int | None:
         with self._slot_lock:
-            return (
-                self._completed_slots.popleft()
-                if self._completed_slots
-                else None
-            )
+            return self._completed_slots.popleft() if self._completed_slots else None
 
     def release_slot(self, slot_id: int) -> None:
         with self._slot_lock:
             self._free_slots.append(slot_id)
 
-    def request_sample(
-        self, product_id: str, timeout_ms: int = 1000
-    ) -> int | None:
+    def request_sample(self, product_id: str, timeout_ms: int = 1000) -> int | None:
         slot_id = self.get_completed()
         if slot_id is not None:
             return slot_id
@@ -183,13 +201,27 @@ class Client:
         return self.get_completed()
 
     def discard(self) -> int:
+        # Bump the generation first so any in-flight (dispatched) order is now
+        # "stale": when its FULFILLED later arrives, _retire frees the slot and
+        # drops the data instead of serving it. The broker only cancels QUEUED
+        # orders (returned in cancelled_ids); their slots were never written, so
+        # free them immediately. DISPATCHED orders stay quarantined in
+        # _pending_slots until they FULFILL, so no supplier write lands in a
+        # reused slot.
+        with self._slot_lock:
+            self._generation += 1
+            # Drop any already-completed (now stale) data, reclaiming the slots.
+            while self._completed_slots:
+                self._free_slots.append(self._completed_slots.popleft())
         reply = self._send(ClientCmd.DISCARD, {})
         cancelled = reply.get("cancelled", 0)
+        cancelled_ids = reply.get("cancelled_ids", [])
         with self._slot_lock:
-            for slot_id in self._pending_slots.values():
-                self._free_slots.append(slot_id)
-            self._pending_slots.clear()
-            self._completed_slots.clear()
+            for order_id in cancelled_ids:
+                slot_id = self._pending_slots.pop(order_id, None)
+                self._pending_gen.pop(order_id, None)
+                if slot_id is not None:
+                    self._free_slots.append(slot_id)
         self._drain_completions()
         return cancelled
 
@@ -198,6 +230,7 @@ class Client:
         if reply.get("ok"):
             with self._slot_lock:
                 slot_id = self._pending_slots.pop(order_id, None)
+                self._pending_gen.pop(order_id, None)
                 if slot_id is not None:
                     self._free_slots.append(slot_id)
             return True

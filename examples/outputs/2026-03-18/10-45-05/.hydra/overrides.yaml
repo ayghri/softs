@@ -1,0 +1,4 @@
+- mode=client
+- training.steps=5
+- training.log_every=1
+- training.save_path=/buckets/checkpoints/qwen3-0.6b-distilled-test

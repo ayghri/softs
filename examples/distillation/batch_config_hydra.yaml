@@ -1,0 +1,59 @@
+# Example: BatchConfig with Hydra instantiation
+# Use with: from hydra.utils import instantiate; config = instantiate(cfg.batch_config)
+
+# Option 1: Full Hydra instantiation with _target_
+batch_config:
+  _target_: softs.BatchConfig
+  specs:
+    # Simple format (recommended) - TensorSpec created automatically
+    - name: x
+      shape: [512, 768]
+      dtype: bfloat16
+
+    - name: y
+      shape: [512, 768]
+      dtype: bfloat16
+
+# Option 2: With explicit TensorSpec _target_ (more verbose but explicit)
+# batch_config:
+#   _target_: softs.BatchConfig
+#   specs:
+#     - _target_: softs.TensorSpec
+#       name: x
+#       shape: [512, 768]
+#       dtype: bfloat16
+#     - _target_: softs.TensorSpec
+#       name: y
+#       shape: [512, 768]
+#       dtype: bfloat16
+
+# Vision model example
+# batch_config:
+#   _target_: softs.BatchConfig
+#   specs:
+#     - name: image
+#       shape: [3, 224, 224]
+#       dtype: float32
+#     - name: features
+#       shape: [2048]
+#       dtype: float32
+#     - name: logits
+#       shape: [1000]
+#       dtype: float32
+
+# LLM sequence example
+# batch_config:
+#   _target_: softs.BatchConfig
+#   specs:
+#     - name: input_ids
+#       shape: [512]
+#       dtype: int64
+#     - name: attention_mask
+#       shape: [512]
+#       dtype: bool
+#     - name: hidden_states
+#       shape: [512, 768]
+#       dtype: bfloat16
+#     - name: logits
+#       shape: [512, 50257]
+#       dtype: float32

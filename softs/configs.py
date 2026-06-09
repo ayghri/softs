@@ -1,10 +1,10 @@
 """Batch config, tensor specs, and encoding utilities."""
 
-import math
 from dataclasses import dataclass
+import math
+import yaml
 
 import torch
-import yaml
 
 _DTYPE_MAP: dict[str, torch.dtype] = {
     "float64": torch.float64,

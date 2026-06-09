@@ -1,0 +1,38 @@
+# Soft-label distillation: Qwen3-8B -> Qwen3-0.6B on FineWeb-Edu
+#
+# One script per role (no mode flag); run each in its own terminal:
+#   python broker.py
+#   python supplier.py device.worker_gpu=0
+#   python client.py   device.student_gpu=1 training.steps=500
+
+defaults:
+  - _self_
+
+log_level: INFO
+
+model:
+  teacher: "Qwen/Qwen3-8B"
+  student: "Qwen/Qwen3-0.6B"
+  seq_length: 2048
+
+training:
+  batch_size: 1
+  grad_accum: 4
+  steps: 1952  # ~1M tokens: 1M / 2048 * grad_accum
+  learning_rate: 1e-5
+  temperature: 2.0
+  top_k: 128
+  top_p: 0.9
+  log_every: 10
+  save_path: "/buckets/checkpoints/qwen3-0.6b-distilled"
+
+softs:
+  slot_count: 4
+
+device:
+  worker_gpu: 0
+  student_gpu: 1
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}

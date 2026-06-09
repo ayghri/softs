@@ -1,0 +1,34 @@
+# Single-layer distillation: capture one Qwen3-0.6B decoder layer's (input,
+# output) hidden states and train a copy of that layer. The simplest end-to-end
+# catcher example (fixed layer, no switching - see ../layerwise for all layers).
+#
+# One script per role; run each in its own terminal:
+#   python broker.py
+#   python supplier.py device.worker_gpu=0
+#   python client.py   device.student_gpu=0
+
+defaults:
+  - _self_
+
+log_level: INFO
+
+model:
+  name: "Qwen/Qwen3-0.6B"
+  seq_length: 64
+  layer: 0            # which decoder layer to distill
+
+training:
+  steps: 200
+  batch_size: 4
+  learning_rate: 1e-4
+
+softs:
+  slot_count: 8
+
+device:
+  worker_gpu: 0
+  student_gpu: 0
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}

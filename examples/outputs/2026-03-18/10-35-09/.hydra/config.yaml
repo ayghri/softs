@@ -1,0 +1,20 @@
+mode: worker
+log_level: INFO
+model:
+  teacher: Qwen/Qwen3-8B
+  student: Qwen/Qwen3-0.6B
+  seq_length: 8096
+training:
+  batch_size: 4
+  steps: 31
+  learning_rate: 1.0e-05
+  temperature: 2.0
+  top_k: 128
+  top_p: 0.9
+  log_every: 10
+  save_path: /buckets/checkpoints/qwen3-0.6b-distilled
+softlabels:
+  slot_count: 4
+device:
+  worker_gpu: 0
+  student_gpu: 1
